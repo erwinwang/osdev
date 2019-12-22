@@ -1,0 +1,2 @@
+main.obj : error LNK2001: unresolved external symbol ___security_cookie
+解决方法：property-》C/C++->code genaration->buffer security checked 更改为NO

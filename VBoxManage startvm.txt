@@ -1,0 +1,14 @@
+VBoxManage startvm
+子命令可以通过–type参数指定启动的方式，其中gui就是图形化界面，这和我们平时启动的方式一样。sdl也是图形化界面，但是少掉了部分功能，比如没有菜单等，一般用于调试过程。最后headless是在后台运行，并且默认开启vrdp服务，可以通过远程桌面工具来访问。关于这三种启动方式的介绍可以看手册中的这一篇。所以一般我们使用gui或者headless类型启动。
+使用gui类型启动虚拟机：
+
+VBoxManage startvm XP --type gui
+1
+执行结束后，就会启动指定的虚拟机，几乎和平时没什么区别。
+使用headless类型启动虚拟机:
+
+VBoxManage startvm "XP" --type headless
+1
+或者
+
+VBoxHeadless --startvm "XP"
