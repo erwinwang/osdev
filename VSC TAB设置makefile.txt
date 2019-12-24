@@ -1,0 +1,19 @@
+Makefile：2： missing separator. Stop.
+
+在make命令后出现这种错误提示，是提示第2行没有分隔符。
+例如：
+1 target：prerequisites
+2 command
+……
+改为：
+1 target：prerequisites
+2     command
+……
+就可以了。
+在Makefile文件中，命令必须以【tab】键开始。
+
+
+如果已在命令行前使用了TAB键，仍提示这个错误。
+则需要设置VSC的配置文件
+
+" 不要用空格代替制表符
