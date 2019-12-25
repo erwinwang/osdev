@@ -1,0 +1,123 @@
+Windows下编译运行xv6
+
+  开始学习xv6之前编译它是第一步骤，然而很多人可能和我一样用的是windows跑linux虚拟机，这样来回切换系统和共享文件显得十分麻烦。在这样的背景下我就想直接在windows编译调试xv6会方便很多。
+
+    首先编译xv6涉及的工具包括gcc，binutils，make，qemu。xv6需要能生成elf32格式的可执行文件的工具链，好在windows下已经有了mingw32这个gcc在windows下的移植，这样用mingw32编译一套在windows下运行的i386-none-elf交叉工具链成为可能。Make和qemu也是如此，这里需要说明的是默认网上下载的qemu可执行文件很可能是不带有gdb调试功能的，这也是需要重新自己编译qemu的原因之一，第二个原因是qemu默认的输入出出会被定向到两个文本文件，直接后果是xv6的uart将无法使用，自己编译qemu解决上述两点。
+
+    接下来是修改makefile文件，这里同时涉及dd，sign.pl，vectors.pl，mkfs。dd在这里的作用是将bootblock和kernel两个文件组合构建xv6.img镜像，sign.pl是在bootblock添加0xaa55引导标记，vectors.pl是生成vectors.S文件，mkfs是构建xv6根文件系统镜像fs.img用的。我编写了wd.c对应dd，sign.c对应sign.pl，vectors.S在linux构建时直接复制了，mkfs.c也需要修改。
+
+工具链：
+工具链：
+
+http://pan.baidu.com/s/1i48Nq9B
+
+wd.c
+
+#include <stdio.h>
+
+int main(int argc, char *argv[])
+{
+	char buf[512];
+	int n;
+	FILE *fdin;
+	FILE *fdout;
+	
+	fdout = fopen(argv[1], "wb+");
+
+	fdin = fopen("bootblock", "rb");
+	for(n = 1; n > 0; ) {
+		n = fread(buf, 1, 512, fdin);
+		fwrite(buf, 1, n, fdout);
+	}
+	fclose(fdin);
+
+	fdin = fopen("kernel", "rb");
+    for(n = 1; n > 0; ) {
+		n = fread(buf, 1, 512, fdin);
+		fwrite(buf, 1, n, fdout);
+    }
+    fclose(fdin);
+	fclose(fdout);
+
+	return 0;
+}
+sign.c
+
+#include <stdio.h>
+
+int main(void)
+{
+	FILE *fd;
+	char buf[2];
+
+	buf[0] = 0x55;
+	buf[1] = 0xaa;
+
+	fd = fopen("bootblock", "rb+");
+	fseek(fd, 510, SEEK_SET);
+	fwrite(buf, 1, 2, fd);
+	fclose(fd);
+
+	return 0;
+}
+mkfs.diff
+
+19c19
+< int fsfd;
+---
+> FILE *fsfd;
+34a35,39
+> 
+> #define bzero(s,n) memset(s,0,n)
+> #define bcopy(src,dest,n) memmove(dest,src,n)
+> #define index(a,b) strchr(a,b)
+> 
+61c66,67
+<   int i, cc, fd;
+---
+>   int i, cc;
+>   FILE *fd;
+75,76c81,82
+<   fsfd = open(argv[1], O_RDWR|O_CREAT|O_TRUNC, 0666);
+<   if(fsfd < 0){
+---
+>   fsfd = fopen(argv[1], "wb+");
+>   if(fsfd == NULL){
+118c124
+<     if((fd = open(argv[i], 0)) < 0){
+---
+>     if((fd = fopen(argv[i], "rb+")) < 0){
+137c143
+<     while((cc = read(fd, buf, sizeof(buf))) > 0)
+---
+> 	while((cc = fread(buf, 1, BSIZE, fd)) > 0)
+140c146
+<     close(fd);
+---
+>     fclose(fd);
+158,159c164,165
+<   if(lseek(fsfd, sec * 512L, 0) != sec * 512L){
+<     perror("lseek");
+---
+>   if(fseek(fsfd, sec * 512L, SEEK_SET) != 0){
+>     perror("fseek");
+162,163c168,169
+<   if(write(fsfd, buf, 512) != 512){
+<     perror("write");
+---
+>   if(fwrite(buf, 1, 512, fsfd) != 512){
+>     perror("fwrite");
+204,205c210,211
+<   if(lseek(fsfd, sec * 512L, 0) != sec * 512L){
+<     perror("lseek");
+---
+>   if(fseek(fsfd, sec * 512L, SEEK_SET) != 0){
+>     perror("fseek");
+208,209c214,215
+<   if(read(fsfd, buf, 512) != 512){
+<     perror("read");
+---
+>   if(fread(buf, 1, 512, fsfd) != 512){
+>     perror("fread");
+
+
