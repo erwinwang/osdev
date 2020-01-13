@@ -1,0 +1,59 @@
+How to disassemble 16-bit x86 boot sector code in GDB with “x/i $pc”? It gets treated as 32-bit
+问题:
+For example, with a boot sector that BIOS prints a to the screen main.asm:
+
+org 0x7c00 bits 16 cli mov ax, 0x0E61 int 0x10 hlt times 510 - ($-$$) db 0 dw 0xaa55 
+Then:
+
+nasm -o main.img main.asm qemu-system-i386 -hda main.img -S -s & gdb -ex 'target remote localhost:1234' \     -ex 'break *0x7c00' \     -ex 'continue' \     -ex 'x/3i $pc' 
+I get:
+
+0x7c00:      cli     0x7c01:      mov    $0x10cd0e61,%eax 0x7c06:      hlt  
+So it looks like the mov ax, 0x0E61 was interpreted as a 32-bit mov %eax and ate up the next instruction int 0x10 as data.
+
+How can I tell GDB that this is 16-bit code?
+
+See also:
+
+in 2007 a GDB dev replied "use objdump" https://www.sourceware.org/ml/gdb/2007-03/msg00308.html as explained at How do I disassemble raw x86 code? Maybe it was implemented meantime?
+superset: Using GDB in 16-bit mode
+similar, but the OP got an error there, so maybe it is something else? How can I disassembly win16 with GDB
+回答1:
+As Jester correctly pointed out in a comment, you just need to use set architecture i8086 when using gdb so that it knows to assume 16-bit 8086 instruction format. You can learn about the gdb targets here.
+
+I'm adding this as an answer because it was too hard to explain in a comment. If you assemble and link things separately you can generate debug information that can then be used by gdb to provide source level debugging even when done remotely against 16-bit code. To do this we modify your assembly file slightly:
+
+;org 0x7c00    - remove as it may be rejected when assembling ;                with elf format. We can specify it on command ;                line or via a linker script. bits 16  ; Use a label for our main entry point so we can break on it ; by name in the debugger main:     cli     mov ax, 0x0E61     int 0x10     hlt     times 510 - ($-$$) db 0     dw 0xaa55 
+I've added some comments to identify the trivial changes made. Now we can use commands like these to assemble our file so that it contains debug output in the dwarf format. We link it to a final elf image. This elf image can be used for symbolic debugging by gdb. We can then convert the elf format to a flat binary with objcopy
+
+nasm -f elf32 -g3 -F dwarf main.asm -o main.o ld -Ttext=0x7c00 -melf_i386 main.o -o main.elf objcopy -O binary main.elf main.img  qemu-system-i386 -hda main.img -S -s & gdb main.elf \         -ex 'target remote localhost:1234' \         -ex 'set architecture i8086' \         -ex 'layout src' \         -ex 'layout regs' \         -ex 'break main' \         -ex 'continue' 
+I've made some minor changes. I use the main.elf file (with symblic information) when starting up gdb.
+
+I also add some more useful layouts for assembly code and the registers that may make debugging on the command line easier. I also break on main (not the address). The source code from our assembly file should also appear because of the debugging information. You can use layout asm instead of layout src if you prefer to see the raw assembly.
+
+This general concept can work on other formats supported by NASM and LD on other platforms. elf32 and elf_i386 as well as the debugging type will have to be modified for the specific environment. My sample targets systems that understand Linux Elf32 binaries.
+
+Debugging 16-bit real mode bootloader with GDB/QEMU
+Unfortunately by default gdb doesn't do segment:offset calculations and will use the value in EIP for breakpoints. You have to specify breakpoints as 32-bit addresses (EIP).
+
+When it comes to stepping through real mode code it can be cumbersome because gdb doesn't handle real mode segmentation. If you step into an interrupt handler you'll discover gdb will display the assembly code relative to EIP. Effectively gdb will be showing you disassembly of the wrong memory location since it didn't account for CS. Thankfully someone has created a GDB script to help. Download the script to your development directory and then run QEMU with something like:
+
+qemu-system-i386 -hda main.img -S -s & gdb -ix gdbinit_real_mode.txt main.elf \         -ex 'target remote localhost:1234' \         -ex 'break main' \         -ex 'continue' 
+The script takes care of setting the architecture to i8086 and then hooks itself into gdb. It provides a number of new macros that can make stepping through 16 bit code easier.
+
+break_int : adds a breakpoint on a software interrupt vector (the way the good old MS DOS and BIOS expose their APIs)
+
+break_int_if_ah : adds a conditional breakpoint on a software interrupt. AH has to be equals to the given parameter. This is used to filter service calls of interrupts. For instance, you sometimes only wants to break when the function AH=0h of the interruption 10h is called (change screen mode).
+
+stepo : this is a kabalistic macro used to 'step-over' function and interrupt calls. How does it work ? The opcode of the current instruction is extracted and if it is a function or interrupt call, the "next" instruction address is computed, a temporary breakpoint is added on that address and the 'continue' function is called.
+
+step_until_ret : this is used to singlestep until we encounter a 'RET' instruction.
+
+step_until_iret : this is used to singlestep until we encounter an 'IRET' instruction.
+
+step_until_int : this is used to singlestep until we encounter an 'INT' instruction.
+
+This script also prints out addresses and registers with segmentation calculated in. Output after each instruction execution looks like:
+
+---------------------------[ STACK ]--- D2EA F000 0000 0000 6F62 0000 0000 0000 7784 0000 7C00 0000 0080 0000 0000 0000 ---------------------------[ DS:SI ]--- 00000000: 53 FF 00 F0 53 FF 00 F0 C3 E2 00 F0 53 FF 00 F0  S...S.......S... 00000010: 53 FF 00 F0 53 FF 00 F0 53 FF 00 F0 53 FF 00 F0  S...S...S...S... 00000020: A5 FE 00 F0 87 E9 00 F0 76 D6 00 F0 76 D6 00 F0  ........v...v... 00000030: 76 D6 00 F0 76 D6 00 F0 57 EF 00 F0 76 D6 00 F0  v...v...W...v... ---------------------------[ ES:DI ]--- 00000000: 53 FF 00 F0 53 FF 00 F0 C3 E2 00 F0 53 FF 00 F0  S...S.......S... 00000010: 53 FF 00 F0 53 FF 00 F0 53 FF 00 F0 53 FF 00 F0  S...S...S...S... 00000020: A5 FE 00 F0 87 E9 00 F0 76 D6 00 F0 76 D6 00 F0  ........v...v... 00000030: 76 D6 00 F0 76 D6 00 F0 57 EF 00 F0 76 D6 00 F0  v...v...W...v... ----------------------------[ CPU ]---- AX: AA55 BX: 0000 CX: 0000 DX: 0080 SI: 0000 DI: 0000 SP: 6F2C BP: 0000 CS: 0000 DS: 0000 ES: 0000 SS: 0000  IP: 7C00 EIP:00007C00 CS:IP: 0000:7C00 (0x07C00) SS:SP: 0000:6F2C (0x06F2C) SS:BP: 0000:0000 (0x00000) OF   DF   IF   TF   SF   ZF   AF   PF   CF  ID   VIP  VIF  AC   VM   RF   NT   IOPL  ---------------------------[ CODE ]---- => 0x7c00 
+:       cli    0x7c01:      mov    ax,0xe61    0x7c04:      int    0x10    0x7c06:      hlt    0x7c07:      add    BYTE PTR [bx+si],al    0x7c09:      add    BYTE PTR [bx+si],al    0x7c0b:      add    BYTE PTR [bx+si],al    0x7c0d:      add    BYTE PTR [bx+si],al    0x7c0f:      add    BYTE PTR [bx+si],al    0x7c11:      add    BYTE PTR [bx+si],al 
