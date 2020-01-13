@@ -1,0 +1,127 @@
+引导程序可以认为是PC加电启动后运行的第一段代码，它是一段长度为512字节的16位运行于实模式的代码。事实上，机器启动后会首先运行0xFFFF0处（也有的资料说是0xFFFFFFF0，BIOS这块我也不熟:-( ）ROM中的BIOS代码，之后会跳转到0x07C00处执行引导程序。
+        1，首先给出一段完整的示例代码，此代码只为说明引导程序的执行流程，不具有加载实际操作系统的功能，只是在屏幕上打印一段信息。
+
+[cpp] view plain copy
+#define BOOTSEG 0x07C0  
+          .code16  
+          .section ".bstext", "ax"  
+          .global bootsect_start  
+  bootsect_start:  
+    
+          # Normalize the start address  
+          ljmp    $BOOTSEG, $start2  
+    
+  start2:  
+          movw    %cs, %ax  
+          movw    %ax, %ds  
+          movw    %ax, %es  
+          movw    %ax, %ss  
+          xorw    %sp, %sp  
+          sti  
+          cld  
+    
+          movw    $bugger_off_msg, %si  
+    
+  msg_loop:  
+          lodsb  
+          andb    %al, %al  
+          jz      bs_die  
+          movb    $0xe, %ah  
+          movw    $7, %bx  
+          int     $0x10  
+          jmp     msg_loop  
+    
+  bs_die:  
+          # Allow the user to press a key, then reboot  
+          xorw    %ax, %ax  
+          int     $0x16  
+          int     $0x19  
+    
+          # int 0x19 should never return.  In case it does anyway,  
+          # invoke the BIOS reset code...  
+          ljmp    $0xf000,$0xfff0  
+    
+  bugger_off_msg:  
+          .ascii  "Hello Boot!\r\n"  
+          .ascii  "by harvey\r\n"  
+          .ascii  "\n"  
+          .byte   0  
+  
+          .org 510  
+          .word 0xAA55  
+                这段代码有几个地方需要注意：
+                1）.code16伪指令指示汇编器将此段代码汇编成16位代码。
+
+                2）ljmp    $BOOTSEG, $start2指令中，BOOTSEG定义为0x07C0，并假设标号start2在所在代码段中的偏移为S。我们知道实模式地址模式为：段基址*16+偏移，那么这条ljmp指令执行后，控制会跳转到0x7C00+S处。又因为整个引导代码在之前会被加载到0x7C00处，所以此时控制“正好”跳转到标号start2处代码。
+
+                3）代码末端的伪指令.org 510，将位置计数器（location counter）设置为510，那么紧跟其后的0xAA55就被设置在第511,512字节。0xAA55是BIOS识别并加载引导程序的标志。
+
+        2，编译链接此程序
+
+               1）用as命令汇编生成目标文件。
+
+                       as -gstabs -o boot.o boot.S
+
+               2）用ld命令链接生成可执行文件。
+
+                       ld -o boot boot.o -Tboot.ld
+
+                       boot.ld为链接脚本，内容如下：
+
+[cpp] view plain copy
+OUTPUT_FORMAT("elf32-i386", "elf32-i386", "elf32-i386")  
+OUTPUT_ARCH(i386)  
+ENTRY(bootsect_start)  
+  
+SECTIONS  
+{  
+    . = 0;  
+    .boot : {*(.bstext)}  
+    . = ASSERT(. <= 512, "Boot too big!");  
+}     
+               此脚本指示ld将目标文件boot.o中的.text段链接拷贝到可执行文件boot中的.boot段，并且.boot段的起始VMA地址为0。.boot代码段就是我们需要的引导程序代码。更多链接脚本语法参考http://sourceware.org/binutils/docs/ld/index.html。
+
+       3，制作引导软盘镜像
+
+              1）用dd命令新建软盘镜像flp.img。
+
+                      dd if=/dev/zero of=flp.img bs=512 count=2880
+
+              2）用losetup命令将flp.img与loop设备关联，这样我们可以通过/dev/loop3设备，像操作真实软盘样操作flp.img文件。
+
+                      losetup /dev/loop0 flp.img
+
+              3）将可执行文件boot中的引导代码写入flp.img的第一个扇区。首先我们要确定.boot段在可执行文件boot中的位置，注意此位置不是指.boot段的VMA地址，而是指其存储在磁盘文件boot中的物理位置，我们用objdump命令查看：
+
+                      objdump -h boot
+
+                      输出如下：
+
+
+
+                      从File off栏可知.boot段位于距boot文件头0x00001000处。然后用dd命令将.boot段写入flp.img的第一个扇区。
+
+                      dd if=boot ibs=512 skip=8 of=/dev/loop0 obs=512 seek=0 count=1
+
+                      其中skip * ibs = 0x00001000为待写数据，即.boot段，在输入源文件，即boot文件中的偏移距离，seek * obs = 0为待写数据将要被写入输出目标文件，即flp.img文件的起始位置，即从flp.img文件头字节开始写入数据，count*obs=512为待写数据的长度。
+
+                      到这里，引导软盘镜像准备好了。关于dd，losetup，objdump命令更多信息可借助man命令，也可参考我前一篇文章。
+
+        4，借助QEMU从引导软盘镜像启动系统。
+
+                运行如下命令启动QEMU。
+
+                qemu -boot order=a -fda /dev/loop0
+
+                此时，我们应该可以在QEMU模拟器的窗口中看到Hello Boot!字样。
+
+
+
+                QEMU也提供单步调试功能。配合GDB，可以方便的调试引导程序。先用如下命令启动QEMU。
+
+                qemu -s -S -boot order=a -fda /dev/loop0
+
+                其中-s -S选项与gdb调试有关，运行此命令后QEMU模拟器会停止并等待gdb发送单步执行命令。更多QEMU信息可参考http://qemu.weilnetz.de/qemu-doc.html。
+
+                在另一个终端调用gdb命令进入gdb命令行，依次输入以下命令。
+
